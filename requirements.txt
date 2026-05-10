@@ -1,0 +1,7 @@
+boto3
+pyspark
+pandas
+scikit-learn
+pyarrow
+python-dotenv
+faker
