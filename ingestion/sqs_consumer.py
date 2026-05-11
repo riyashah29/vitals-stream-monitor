@@ -36,13 +36,14 @@ def poll_and_save():
                 )
 
         if all_records:
-            key = f"vitals/{datetime.now().strftime('%Y/%m/%d/%H-%M-%S')}-batch.json"
+            key = f"vitals/batch-{datetime.now().strftime('%Y%m%d-%H%M%S')}.json"
+            body = "\n".join(json.dumps(record) for record in all_records) + "\n"
             s3.put_object(
                 Bucket=S3_RAW_BUCKET,
                 Key=key,
-                Body=json.dumps(all_records).encode("utf-8")
+                Body=body.encode("utf-8")
             )
-            print(f"Saved {len(all_records)} records to s3://{S3_RAW_BUCKET}/{key}")
+            print(f"Saved {len(all_records)} records to s3a://{S3_RAW_BUCKET}/{key}")
         else:
             print(f"No messages yet... waiting")
 

@@ -40,27 +40,33 @@ BP_SYSTOLIC_MAX     = float(os.getenv("BP_SYSTOLIC_MAX"))
 BP_DIASTOLIC_MAX    = float(os.getenv("BP_DIASTOLIC_MAX"))
 SPO2_MIN            = float(os.getenv("SPO2_MIN"))
 
-S3_INPUT_PATH       = f"s3://{S3_RAW_BUCKET}/vitals/"
-S3_OUTPUT_PATH      = f"s3://{S3_PROCESSED_BUCKET}/processed/"
-CHECKPOINT_PATH     = f"s3://{S3_PROCESSED_BUCKET}/checkpoints/spark/"
+S3_INPUT_PATH   = f"s3a://{S3_RAW_BUCKET}/vitals/"
+S3_OUTPUT_PATH  = f"s3a://{S3_PROCESSED_BUCKET}/processed/"
+CHECKPOINT_PATH = f"s3a://{S3_PROCESSED_BUCKET}/checkpoints/spark/"
 
 # ─────────────────────────────────────────────────────────────────────────────
-# STEP 1 — CREATE SPARK SESSION
+# STEP 1 - CREATE SPARK SESSION
 # ─────────────────────────────────────────────────────────────────────────────
 
 print("=" * 60)
-print("  Patient Vitals Monitoring — Spark Streaming Job")
+print("  Patient Vitals Monitoring - Spark Streaming Job")
 print("=" * 60)
 
 spark = SparkSession.builder \
     .appName("PatientVitalsMonitoring") \
     .config("spark.sql.shuffle.partitions", "4") \
     .config("spark.streaming.stopGracefullyOnShutdown", "true") \
-    .config("spark.sql.streaming.forceDeleteTempCheckpointLocation", "true") \
+    .config("spark.hadoop.fs.s3a.impl", "org.apache.hadoop.fs.s3a.S3AFileSystem") \
+    .config("spark.hadoop.fs.s3a.aws.credentials.provider", "com.amazonaws.auth.DefaultAWSCredentialsProviderChain") \
+    .config("spark.hadoop.fs.s3a.endpoint", "s3.amazonaws.com") \
+    .config("spark.hadoop.fs.s3a.connection.timeout", "60000") \
+    .config("spark.hadoop.fs.s3a.socket.timeout", "60000") \
+    .config("spark.local.dir", "C:/tmp/spark") \
+    .config("spark.hadoop.hadoop.tmp.dir", "C:/tmp/hadoop") \
     .getOrCreate()
 
 spark.sparkContext.setLogLevel("WARN")
-print("✓ Spark session created")
+print("Spark session created")
 
 # ─────────────────────────────────────────────────────────────────────────────
 # STEP 2 — DEFINE SCHEMA
@@ -79,7 +85,7 @@ vitals_schema = StructType([
     StructField("anomaly_type",  StringType(),  nullable=True),
 ])
 
-print("✓ Schema defined")
+print("Schema defined")
 
 # ─────────────────────────────────────────────────────────────────────────────
 # STEP 3 — READ STREAM FROM S3
@@ -91,6 +97,7 @@ raw_stream = spark.readStream \
     .format("json") \
     .schema(vitals_schema) \
     .option("path", S3_INPUT_PATH) \
+    .option("recursiveFileLookup", "true") \
     .option("maxFilesPerTrigger", 10) \
     .load()
 
@@ -99,7 +106,7 @@ parsed_stream = raw_stream \
     .filter(col("patient_id").isNotNull()) \
     .filter(col("event_time").isNotNull())
 
-print("✓ Stream reader configured")
+print("Stream reader configured")
 
 # ─────────────────────────────────────────────────────────────────────────────
 # STEP 4 — WATERMARKING
@@ -108,7 +115,7 @@ print("✓ Stream reader configured")
 watermarked = parsed_stream \
     .withWatermark("event_time", WATERMARK_DELAY)
 
-print("✓ Watermark applied")
+print("Watermark applied")
 
 # ─────────────────────────────────────────────────────────────────────────────
 # STEP 5 — ROLLING WINDOW AGGREGATION
@@ -147,7 +154,7 @@ aggregated = watermarked \
         col("max_bp_systolic")
     )
 
-print("✓ Window aggregation configured")
+print("Window aggregation configured")
 
 # ─────────────────────────────────────────────────────────────────────────────
 # ANOMALY DETECTION FUNCTIONS
@@ -222,9 +229,7 @@ def apply_isolation_forest(pdf):
                              .reindex(pdf.index, fill_value=0.0)
     return pdf
 
-# ─────────────────────────────────────────────────────────────────────────────
 # SNS ALERT FUNCTION
-# ─────────────────────────────────────────────────────────────────────────────
 
 def send_sns_alert(row_dict):
     """
@@ -244,7 +249,7 @@ def send_sns_alert(row_dict):
 
     message = f"""
 CRITICAL PATIENT VITALS ALERT
-═══════════════════════════════════════
+---------------------------------------
 Patient ID    : {patient_id}
 Alert Type    : {anomaly_type}
 Window        : {window_start}
@@ -257,8 +262,8 @@ AVERAGED VITALS (5-min window):
   SpO2           : {avg_spo2}%
 
 Please review patient immediately.
-═══════════════════════════════════════
-Automated alert — Patient Vitals Monitor
+---------------------------------------
+Automated alert - Patient Vitals Monitor
 """.strip()
 
     try:
@@ -272,7 +277,7 @@ Automated alert — Patient Vitals Monitor
         print(f"  SNS alert failed for {patient_id}: {e}")
 
 # ─────────────────────────────────────────────────────────────────────────────
-# STEP 6 — PROCESS EACH MICRO-BATCH
+# STEP 6 - PROCESS EACH MICRO-BATCH
 # ─────────────────────────────────────────────────────────────────────────────
 
 def process_batch(batch_df, batch_id):
@@ -280,15 +285,15 @@ def process_batch(batch_df, batch_id):
     Called by Spark every 30 seconds with a new batch of aggregated data.
     Runs anomaly detection, sends alerts, saves results to S3.
     """
-    print(f"\n{'─'*50}")
+    print(f"\n{'-'*50}")
     print(f"  Batch {batch_id} | {datetime.now().strftime('%H:%M:%S')}")
-    print(f"{'─'*50}")
+    print(f"{'-'*50}")
 
     pdf = batch_df.toPandas()
     print(f"  Records: {len(pdf)}")
 
     if pdf.empty:
-        print("  Empty batch — skipping.")
+        print("  Empty batch - skipping.")
         return
 
     # Rule-based detection
