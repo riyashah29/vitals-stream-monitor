@@ -7,6 +7,9 @@ import io
 from datetime import datetime
 from dotenv import load_dotenv
 
+import sys
+sys.stdout.reconfigure(encoding='utf-8')
+
 from pyspark.sql import SparkSession
 from pyspark.sql.functions import (
     col, avg, window, to_timestamp,
@@ -281,10 +284,6 @@ Automated alert - Patient Vitals Monitor
 # ─────────────────────────────────────────────────────────────────────────────
 
 def process_batch(batch_df, batch_id):
-    """
-    Called by Spark every 30 seconds with a new batch of aggregated data.
-    Runs anomaly detection, sends alerts, saves results to S3.
-    """
     print(f"\n{'-'*50}")
     print(f"  Batch {batch_id} | {datetime.now().strftime('%H:%M:%S')}")
     print(f"{'-'*50}")
@@ -296,7 +295,7 @@ def process_batch(batch_df, batch_id):
         print("  Empty batch - skipping.")
         return
 
-    # Rule-based detection
+    # Rule-based detection — returns None or a string like "Tachycardia..."
     pdf["rule_anomaly"] = pdf.apply(
         lambda row: apply_rule_based_detection(row.to_dict()), axis=1
     )
@@ -306,18 +305,26 @@ def process_batch(batch_df, batch_id):
     pdf = apply_isolation_forest(pdf)
     print(f"  ML anomalies   : {pdf['is_ml_anomaly'].sum()}")
 
-    # Combine both methods
+    # Combine — MUST happen before fillna so None is still None here
     pdf["is_anomaly"] = pdf["rule_anomaly"].notna() | pdf["is_ml_anomaly"]
-    pdf["final_anomaly_type"] = pdf["rule_anomaly"].fillna(
-        pdf["is_ml_anomaly"].map({True: "ML-Detected Pattern Anomaly", False: ""})
+
+    # Build final label — use pd.notna() since rule_anomaly is still None/string here
+    pdf["final_anomaly_type"] = pdf.apply(
+        lambda row: row["rule_anomaly"] if pd.notna(row["rule_anomaly"])
+        else ("ML-Detected Pattern Anomaly" if row["is_ml_anomaly"] else ""),
+        axis=1
     )
+
+    # NOW convert None to "" for Parquet compatibility — must be last
+    pdf["rule_anomaly"] = pdf["rule_anomaly"].fillna("").astype(str)
+
     print(f"  Total anomalies: {pdf['is_anomaly'].sum()}")
 
-    # Send alerts
+    # Send alerts only for anomalies
     for _, row in pdf[pdf["is_anomaly"]].iterrows():
         send_sns_alert(row.to_dict())
 
-    # Save to S3 as Parquet
+    # Save to S3
     try:
         import pyarrow as pa
         import pyarrow.parquet as pq
@@ -342,7 +349,7 @@ def process_batch(batch_df, batch_id):
     except Exception as e:
         print(f"  S3 write error: {e}")
 
-    print(f"{'─'*50}\n")
+    print(f"{'-'*50}\n")
 
 # ─────────────────────────────────────────────────────────────────────────────
 # STEP 7 — START THE STREAMING QUERY
